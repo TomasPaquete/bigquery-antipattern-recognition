@@ -1,0 +1,87 @@
+name: Sync Fork with Upstream
+
+on:
+  schedule:
+    # Runs at 00:00 UTC daily (adjust as needed, e.g., '0 * * * *' for hourly)
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+    # Allows manual triggering from the GitHub Actions tab
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to push to your fork
+      pull-requests: write # Required to create/update pull requests
+
+    steps:
+    - name: Checkout Fork
+      uses: actions/checkout@v4
+      with:
+        # Check out your fork's repository (current repo)
+        repository: ${{ github.repository }}
+        token: ${{ secrets.GITHUB_TOKEN }} # Use default GITHUB_TOKEN to push to your fork
+
+    - name: Set Upstream Remote
+      run: |
+        # Add the original repository as an 'upstream' remote
+        # Replace 'OWNER_OF_ORIGINAL_REPO/ORIGINAL_REPO_NAME' with the actual upstream repo
+        git remote add upstream https://github.com/GoogleCloudPlatform/bigquery-antipattern-recognition.git
+        git fetch upstream
+
+    - name: Check for Upstream Changes
+      id: check_changes
+      run: |
+        # Compare your fork's main branch with the upstream's main branch
+        # Replace 'main' with your default branch name if different
+        UPSTREAM_BRANCH=${{ github.ref_name }}
+        if [ "$(git rev-parse HEAD)" = "$(git rev-parse upstream/$UPSTREAM_BRANCH)" ]; then
+          echo "No new commits from upstream."
+          echo "has_changes=false" >> $GITHUB_OUTPUT
+        else
+          echo "New commits detected from upstream."
+          echo "has_changes=true" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Merge Upstream Changes into a Sync Branch
+      if: steps.check_changes.outputs.has_changes == 'true'
+      run: |
+        UPSTREAM_BRANCH=${{ github.ref_name }} # e.g., 'main'
+        SYNC_BRANCH="sync-upstream-${{ github.ref_name }}" # New branch for the PR
+
+        # Create a new branch to merge upstream into
+        git checkout -b $SYNC_BRANCH
+
+        # Merge upstream changes. --no-ff ensures a merge commit, even if it's a fast-forward.
+        # This makes the merge explicit for the PR.
+        git merge upstream/$UPSTREAM_BRANCH --no-ff -m "Merge upstream/${UPSTREAM_BRANCH} into ${SYNC_BRANCH}"
+
+        # Push the new branch to your fork
+        git push origin $SYNC_BRANCH
+
+    - name: Create or Update Pull Request
+      if: steps.check_changes.outputs.has_changes == 'true'
+      uses: peter-evans/create-pull-request@v6
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        committer: GitHub <noreply@github.com>
+        author: ${{ github.actor }} <${{ github.actor }}@users.noreply.github.com>
+        base: ${{ github.ref_name }} # Merge into your fork's main/default branch
+        head: ${{ github.ref_name }} # Use the same branch name as the fork, but create a new branch for the PR
+        # IMPORTANT: 'head' needs to be the branch we just pushed (sync-upstream-main).
+        # Corrected: Create a new branch 'sync-upstream-main'
+        # The 'head' for the PR should be the branch we just pushed.
+        # Let's adjust the `head` parameter based on the `SYNC_BRANCH` variable.
+        branch: sync-upstream-${{ github.ref_name }} # This parameter is what the action uses for the HEAD of the PR
+        delete-branch: true # Delete the sync branch after PR is merged/closed
+        title: 'Sync Fork with Upstream ${{ github.ref_name }}'
+        body: |
+          This PR brings your fork's `${{ github.ref_name }}` branch up-to-date with the latest changes from the upstream repository.
+
+          Please review the changes and merge manually.
+
+          Source: `https://github.com/GoogleCloudPlatform/bigquery-antipattern-recognition.git`
+        labels: |
+          automation
+          sync
+        draft: false # Set to true if you prefer draft PRs
